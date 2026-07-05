@@ -151,3 +151,52 @@ def test_payment_check(requests_mock, client):
 
     assert client.payment_check(invoice_id=str(invoice_id)) is False
     assert client.payment_check(invoice_id=str(invoice_id)) is True
+
+
+def test_request_uses_default_timeout(requests_mock, client, monkeypatch):
+    requests_mock.post(
+        urljoin(client._host, "payment/check"), json={"count": 0, "rows": []}
+    )
+    calls = []
+    original_request = client._session.request
+    monkeypatch.setattr(
+        client._session,
+        "request",
+        lambda *a, **kw: (calls.append(kw), original_request(*a, **kw))[1],
+    )
+
+    client.payment_check(invoice_id="1234")
+
+    assert calls[0]["timeout"] == 10
+
+
+def test_request_respects_explicit_timeout_override(requests_mock, client, monkeypatch):
+    requests_mock.post(
+        urljoin(client._host, "payment/check"), json={"count": 0, "rows": []}
+    )
+    calls = []
+    original_request = client._session.request
+    monkeypatch.setattr(
+        client._session,
+        "request",
+        lambda *a, **kw: (calls.append(kw), original_request(*a, **kw))[1],
+    )
+
+    client._request(
+        "post",
+        "payment/check",
+        json={"object_type": "INVOICE", "object_id": "1234"},
+        timeout=1,
+    )
+
+    assert calls[0]["timeout"] == 1
+
+
+def test_client_configures_retry_adapter():
+    client = QPayClient(host=HOST, username="username", password="password")
+    assert client._session.adapters["https://"].max_retries.total == 3
+
+    custom = QPayClient(
+        host=HOST, username="username", password="password", max_retries=5
+    )
+    assert custom._session.adapters["https://"].max_retries.total == 5

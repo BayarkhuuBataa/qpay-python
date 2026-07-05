@@ -1,25 +1,15 @@
 import logging
-import threading
 from datetime import datetime, timedelta
 from typing import Callable, Optional
 from urllib.parse import urljoin
 
 import requests
-from pydantic import BaseModel
 
+from ._http import build_session
 from .exceptions import QPayException
+from .token_store import AccessToken, InMemoryTokenStore, RefreshToken, TokenStore
 
 logger = logging.getLogger(__name__)
-
-
-class AccessToken(BaseModel):
-    token: str
-    expires: datetime
-
-
-class RefreshToken(BaseModel):
-    token: str
-    expires: datetime
 
 
 class QPayAuth(requests.auth.AuthBase):
@@ -29,14 +19,17 @@ class QPayAuth(requests.auth.AuthBase):
         username: str,
         password: str,
         now: Optional[Callable[[], datetime]] = None,
+        token_store: Optional[TokenStore] = None,
+        timeout: float = 10,
+        max_retries: int = 3,
     ):
-        self._access_token: Optional[AccessToken] = None
-        self._refresh_token: Optional[RefreshToken] = None
-        self._token_lock = threading.Lock()
+        self._token_store = token_store or InMemoryTokenStore()
+        self._session = build_session(max_retries)
         self._host = urljoin(host, "auth/")
         self._username = username
         self._password = password
         self._now = now
+        self._timeout = timeout
 
     def _timestamp(self):
         if self._now:
@@ -50,14 +43,16 @@ class QPayAuth(requests.auth.AuthBase):
         try:
             now = self._timestamp()
             r = (
-                requests.post(
+                self._session.post(
                     urljoin(self._host, "refresh"),
                     headers={"Authorization": f"Bearer {refresh_token.token}"},
+                    timeout=self._timeout,
                 )
                 if refresh_token and refresh_token.expires > now
-                else requests.post(
+                else self._session.post(
                     urljoin(self._host, "token"),
                     auth=(self._username, self._password),
+                    timeout=self._timeout,
                 )
             )
             r.raise_for_status()
@@ -80,16 +75,16 @@ class QPayAuth(requests.auth.AuthBase):
             ) from exc
 
     def _get_token(self) -> AccessToken:
-        with self._token_lock:
+        with self._token_store.lock():
+            access_token, refresh_token = self._token_store.get()
             now = self._timestamp()
 
-            if self._access_token and self._access_token.expires > now:
-                return self._access_token
+            if access_token and access_token.expires > now:
+                return access_token
 
-            self._access_token, self._refresh_token = self._fetch_token(
-                self._refresh_token
-            )
-            return self._access_token
+            access_token, refresh_token = self._fetch_token(refresh_token)
+            self._token_store.set(access_token, refresh_token)
+            return access_token
 
     def __call__(self, r):
         token = self._get_token()

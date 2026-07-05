@@ -1,14 +1,16 @@
 import logging
 from decimal import Decimal
-from typing import Literal
+from typing import Literal, Optional
 from urllib.parse import urljoin
 
-import requests
 from pydantic import BaseModel, Field, field_serializer
+from requests import HTTPError
 
+from ._http import build_session
 from .auth import QPayAuth
 from .exceptions import QPayException
 from .singleton import Singleton
+from .token_store import TokenStore
 
 logger = logging.getLogger(__name__)
 
@@ -77,20 +79,37 @@ class CreateInvoicePayload(BaseModel):
 
 
 class QPayClient(Singleton):
-    def __init__(self, host: str, username: str, password: str):
-        session = requests.Session()
-        session.auth = QPayAuth(host, username, password)
+    def __init__(
+        self,
+        host: str,
+        username: str,
+        password: str,
+        token_store: Optional[TokenStore] = None,
+        timeout: float = 10,
+        max_retries: int = 3,
+    ):
+        session = build_session(max_retries)
+        session.auth = QPayAuth(
+            host,
+            username,
+            password,
+            token_store=token_store,
+            timeout=timeout,
+            max_retries=max_retries,
+        )
         self._host = host
         self._session = session
+        self._timeout = timeout
 
     def _request(self, method: Literal["get", "post", "delete"], path: str, **kwargs):
         try:
             url = urljoin(self._host, path)
+            kwargs.setdefault("timeout", self._timeout)
             response = self._session.request(method, url, **kwargs)
             response.raise_for_status()
 
             return response.json()
-        except requests.HTTPError as exc:
+        except HTTPError as exc:
             logger.exception(exc)
             raise QPayException(
                 f"Error: [{exc.response.status_code}] {method.capitalize()} - {path}",

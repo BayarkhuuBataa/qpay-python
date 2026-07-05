@@ -50,6 +50,44 @@ print(invoice.qr_text) # 0002010102121531279404962794049600000000KKTQ...
 ...
 ```
 
+### Олон worker-т ашиглах
+
+`QPayClient`/`QPayAuth` нь токеныг санах ойд (`InMemoryTokenStore`) хадгалдаг тул нэг процесс дотор л хуваалцана. Хэрэв та олон worker процесстой орчинд ажиллуулж байгаа бол worker бүр өөрийн токен тусад нь татаж авах болно. Үүнээс сэргийлж, `qpay.TokenStore`-г удамшуулан өөрийн (жишээ нь Redis-д тулгуурласан) хувилбараа `token_store` аргументаар дамжуулж болно:
+
+```py
+import redis
+from qpay import AccessToken, QPayClient, RefreshToken, TokenStore
+
+class RedisTokenStore(TokenStore):
+    def __init__(self, client: redis.Redis, key_prefix: str = "qpay"):
+        self._client = client
+        self._prefix = key_prefix
+
+    def get(self):
+        access = self._client.get(f"{self._prefix}:access")
+        refresh = self._client.get(f"{self._prefix}:refresh")
+        return (
+            AccessToken.model_validate_json(access) if access else None,
+            RefreshToken.model_validate_json(refresh) if refresh else None,
+        )
+
+    def set(self, access_token, refresh_token):
+        self._client.set(f"{self._prefix}:access", access_token.model_dump_json())
+        self._client.set(f"{self._prefix}:refresh", refresh_token.model_dump_json())
+
+    def lock(self):
+        return self._client.lock(f"{self._prefix}:lock", timeout=10)
+
+client = QPayClient.instance(
+    host="https://merchant.qpay.mn/v2/",
+    username="MERCHANT_USERNAME",
+    password="MERCHANT_PASSWORD",
+    token_store=RedisTokenStore(redis.Redis()),
+)
+```
+
+Ингэснээр бүх worker нэг л токен хуваалцах бөгөөд хугацаа дуусах, сэргээх зэргийг нэг л газар зохицуулна.
+
 ## <a id="contribution"></a>Хөгжүүлэлтэнд оролцох
 
 Энэхүү сантай холбоотой алдаа засвар, сайжруулалт болон бусад санал, хүсэлтийг нээлттэй хүлээж авах ба ялангуяа чанартай кодын өөрчлөлтүүд илгээвэл маш их баярлах болно.
